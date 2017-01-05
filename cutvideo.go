@@ -10,93 +10,113 @@ import (
     "fmt"
     "errors"
     "os"
+	"path"
 )
 
-func getEpoch( filePath string ) (*time.Time,error){
+type FileAttr struct {
+    did string
+    fileTime time.Time
+}
 
+
+func getFileAttr( filePath string ) (*FileAttr,error) {
+
+	fa := new(FileAttr)
 	fileName := filepath.Base(filePath)
-        fileExt := filepath.Ext(filePath)
-        didEpochStr := fileName[:len(fileName)-len(fileExt)]
-        
-	didEpochSlice := strings.Split(didEpochStr,"-")
+	fileExt := filepath.Ext(filePath)
+	didEpochStr := fileName[:len(fileName) - len(fileExt)]
+
+	didEpochSlice := strings.Split(didEpochStr, "-")
 	if len(didEpochSlice) != 2 {
-            err := errors.New( fmt.Sprintf("file:%s is invalid",fileName )  )
-            Error(err)
-            return nil,err
-        }
-
-	epochInt,err := strconv.Atoi( didEpochSlice[1] )
-	if err != nil {
-	    Error(err)
-            return nil,err
+		err := errors.New(fmt.Sprintf("file:%s is invalid", fileName))
+		Error(err)
+		return nil, err
 	}
-	fileEpoch := time.Unix(int64(epochInt),0)
 
-	return &fileEpoch,nil
+	fa.did = didEpochSlice[0]
+
+	epochInt, err := strconv.Atoi(didEpochSlice[1])
+	if err != nil {
+		Error(err)
+		return nil, err
+	}
+
+	fa.fileTime = time.Unix(int64(epochInt), 0)
+	return fa, nil
 
 }
 
-func ffmpegCmd( command string )error{
-        Infoln(command)
-        commands := strings.Split(command," ")
-//	cmd := exec.Command( "/usr/bin/ffmpeg", "-ss", fromStr, "-i", file , "-to" ,toStr, "-c" ,"copy", "cut.mp4" )
-	cmd := exec.Command( commands[0],commands[1:]... )
+func ffmpegCmd( command string )error {
+	Infoln(command)
+	commands := strings.Split(command, " ")
+	//	cmd := exec.Command( "/usr/bin/ffmpeg", "-ss", fromStr, "-i", file , "-to" ,toStr, "-c" ,"copy", "cut.mp4" )
+	cmd := exec.Command(commands[0], commands[1:]...)
 	cmd.Stdin = strings.NewReader("")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	err := cmd.Run()
 	if err != nil {
-	    Error(err)
-            return err
+		Error(err)
+		return err
 	}
-        Info( "ffmpeg:"+out.String() )
-        return nil
+	Info("ffmpeg:" + out.String())
+	return nil
 }
 
-func cut( file string , start_time time.Time, duration int )(string,error){
+func cut( file string , start_time time.Time, duration int )(string,error) {
 
- 	fileEpoch,err := getEpoch(file) 
+	fa, err := getFileAttr(file)
 	if err != nil {
-            return "",nil
+		return "", nil
 	}
-        Infof("file time:%v", *fileEpoch)
-        Infof("start time:%v", start_time )
+	Infof("file time:%v", fa.fileTime)
+	Infof("start time:%v", start_time)
 
-        offset := start_time.Sub( *fileEpoch )
-        Infof("offset:%v", offset )
-	fromStr := fmt.Sprintf("00:%02d:%02d", int(offset.Minutes()) , int(offset.Seconds()) )
-	toStr := fmt.Sprintf("00:%02d:%02d", duration/60 , duration%60 )
+	offset := start_time.Sub(fa.fileTime)
+	Infof("offset:%v", offset)
+	fromStr := fmt.Sprintf("00:%02d:%02d", int(offset.Minutes()), int(offset.Seconds()))
+	toStr := fmt.Sprintf("00:%02d:%02d", duration / 60, duration % 60)
 
-        Infof("from:%s to:%s",fromStr,toStr)
-        command := fmt.Sprintf("ffmpeg -ss %s -i %s -to %s -c copy cut.mp4",fromStr,file,toStr )
-        err = ffmpegCmd(command)
+	Infof("from:%s to:%s", fromStr, toStr)
+	distFile := fmt.Sprintf("%s-%d-%d.mp4",fa.did,fa.fileTime.Unix(),start_time.Unix())
+	command := fmt.Sprintf("ffmpeg -y -ss %s -i %s -to %s -c copy %s", fromStr, file, toStr, distFile )
+	err = ffmpegCmd(command)
 	if err != nil {
-	    Error(err)
-            return "",nil
+		Error(err)
+		return "", nil
 	}
 
-	return "cut.mp4",nil
+	os.Remove(file)
+	return distFile, nil
 }
 
+func concatnate( files []string )(string,error) {
 
-func concatnate( files []string )(string,error){
+	concatFile := path.Base(files[0])
 
-    f, err := os.OpenFile( "concat.list" , os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
-    if err != nil {
-        Error(err)
-        return "",err
-    }
+	concatListFile := strings.Split(concatFile,".")[0] + ".list"
 
-    defer f.Close()
-    
-    for _,file := range files {
-        fmt.Fprintf(f, "file '%s'\n" , file )
-    }   
+	f, err := os.OpenFile(concatListFile, os.O_WRONLY | os.O_CREATE, 0600)
+	if err != nil {
+		Error(err)
+		return "", err
+	}
 
+	defer f.Close()
 
- 
-    return "concat.list",nil
+	for _, file := range files {
+		fmt.Fprintf(f, "file '%s'\n", file)
+	}
 
+	command := fmt.Sprintf("ffmpeg -y -f concat -safe 0 -i %s -c copy %s",concatListFile , concatFile )
+	err = ffmpegCmd(command)
+	if err != nil {
+		Error(err)
+		return "", nil
+	}
+	os.Remove(concatListFile)
+
+	return concatFile, nil
 
 }
 
